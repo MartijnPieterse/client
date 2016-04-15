@@ -102,7 +102,7 @@ class GameItem(QtGui.QListWidgetItem):
             url = QtCore.QUrl()
             url.setScheme("faflive")
             url.setHost("lobby.faforever.com")
-            url.setPath(str(self.uid) + "/" + player_id + ".SCFAreplay")
+            url.setPath(str(self.uid) + "/" + str(player_id) + ".SCFAreplay")
             url.addQueryItem("map", self.mapname)
             url.addQueryItem("mod", self.mod)
             return url
@@ -116,7 +116,6 @@ class GameItem(QtGui.QListWidgetItem):
             url.addQueryItem("uid", str(self.uid))
             return url
         return None 
-        
         
     @QtCore.pyqtSlot()
     def announceReplay(self):
@@ -190,13 +189,16 @@ class GameItem(QtGui.QListWidgetItem):
 
         # Clear the status for all involved players (url may change, or players may have left, or game closed)        
         for player in self.players:
-            if player in client.urls:
-                del client.urls[player]
+            if player.login in client.urls:
+                del client.urls[player.login]
 
         # Just jump out if we've left the game, but tell the client that all players need their states updated
         if self.state == "closed":
             client.usersUpdated.emit(self.players)
             return
+
+        # Used to differentiate between newly added / removed and previously present players
+        oldplayers = set(map(lambda p: p.login, self.players))
 
         # Following the convention used by the game, a team value of 1 represents "No team". Let's
         # desugar those into "real" teams now (and convert the dict to a list)
@@ -204,12 +206,18 @@ class GameItem(QtGui.QListWidgetItem):
         self.players = []
         teams = []
         for team_index, team in teams_map.iteritems():
-            self.players.extend(team)
             if team_index == 1:
                 for ffa_player in team:
-                    teams.append([self.client.players[ffa_player]])
+                    if ffa_player in self.client.players:
+                        self.players.append(self.client.players[ffa_player])
+                        teams.append([self.client.players[ffa_player]])
             else:
-                teams.append(map(lambda name: self.client.players[name], team))
+                real_team = []
+                for name in team:
+                    if name in self.client.players:
+                        self.players.append(self.client.players[name])
+                        real_team.append(self.client.players[name])
+                teams.append(real_team)
 
         # Tuples for feeding into trueskill.
         rating_tuples = []
@@ -243,9 +251,6 @@ class GameItem(QtGui.QListWidgetItem):
                              
             self.setIcon(icon)
 
-        # Used to differentiate between newly added / removed and previously present players            
-        oldplayers = set(self.players)
-
         strQuality = ""
         
         if self.gamequality == 0 :
@@ -262,16 +267,7 @@ class GameItem(QtGui.QListWidgetItem):
 
         self.editTooltip(teams)
 
-        if self.mod == "faf" or self.mod == "balancetesting" and not self.mods:
-            self.setText(self.FORMATTER_FAF.format(color=color, mapslots = self.slots, mapdisplayname=self.mapdisplayname, title=self.title, host=self.host, players=num_players, playerstring=playerstring, gamequality = strQuality))
-        else:
-            if not self.mods:
-                modstr = self.mod
-            else:
-                if self.mod == 'faf': modstr = ", ".join(self.mods.values())
-                else: modstr = self.mod + " & " + ", ".join(self.mods.values())
-                if len(modstr) > 20: modstr = modstr[:15] + "..."
-            self.setText(self.FORMATTER_MOD.format(color=color, mapslots = self.slots, mapdisplayname=self.mapdisplayname, title=self.title, host=self.host, players=num_players, playerstring=playerstring, gamequality = strQuality, mod=modstr))
+        self.setText(self.FORMATTER_FAF.format(color=color, mapslots = self.slots, mapdisplayname=self.mapdisplayname, title=self.title, host=self.host, players=num_players, playerstring=playerstring, gamequality = strQuality))
 
         #Spawn announcers: IF we had a gamestate change, show replay and hosting announcements 
         if (oldstate != self.state):            
@@ -282,10 +278,10 @@ class GameItem(QtGui.QListWidgetItem):
 
         # Update player URLs
         for player in self.players:
-            client.urls[player] = self.url(player)
+            client.urls[player.login] = self.url(player.id)
 
         # Determine which players are affected by this game's state change            
-        newplayers = set(self.players)            
+        newplayers = set(map(lambda p: p.login, self.players))
         affectedplayers = oldplayers | newplayers
         client.usersUpdated.emit(list(affectedplayers))
 
@@ -323,7 +319,7 @@ class GameItem(QtGui.QListWidgetItem):
                     else :
                         displayPlayer = ("<td align = 'center' valign='center' width = '150'>%s</td>" % playerStr)
 
-                    country = os.path.join(util.COMMON_DIR, "chat/countries/%s.png" % player.country.lower())
+                    country = os.path.join(util.COMMON_DIR, "chat/countries/%s.png" % (player.country or '').lower())
 
                     if i == self.nTeams :
                         displayPlayer += '<td width="16"><img src = "'+country+'" width="16" height="16"></td>'

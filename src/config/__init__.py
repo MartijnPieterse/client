@@ -1,10 +1,9 @@
 from . import version
 import os
-import sys
 import logging
 import trueskill
-from logging.handlers import RotatingFileHandler
 from PyQt4 import QtCore
+from logging.handlers import RotatingFileHandler, MemoryHandler
 
 trueskill.setup(mu=1500, sigma=500, beta=250, tau=5, draw_probability=0.10)
 
@@ -67,6 +66,7 @@ def make_dirs():
     for dir in [
         'client/data_path',
         'game/logs/path',
+        'game/bin/path',
         'game/mods/path',
         'game/engine/path',
         'game/maps/path',
@@ -87,7 +87,8 @@ def is_development_version():
 # FIXME: Don't initialize proxy code that shows a dialogue box on import
 no_dialogs = False
 
-environment = 'development'
+environment = 'production'
+
 
 def is_beta():
     return environment == 'development'
@@ -102,11 +103,14 @@ elif environment == 'development':
 
 # Setup normal rotating log handler
 make_dirs()
-rotate = RotatingFileHandler(filename=os.path.join(Settings.get('client/logs/path'), 'forever.log'),
-                             maxBytes=Settings.get('client/logs/max_size'),
-                             backupCount=10)
+rotate = RotatingFileHandler(os.path.join(Settings.get('client/logs/path'), 'forever.log'),
+                             maxBytes=int(Settings.get('client/logs/max_size')),
+                             backupCount=1)
 rotate.setFormatter(logging.Formatter('%(asctime)s %(levelname)-8s %(name)-30s %(message)s'))
-logging.getLogger().addHandler(rotate)
+
+buffering_handler = MemoryHandler(int(Settings.get('client/logs/buffer_size')), target=rotate)
+
+logging.getLogger().addHandler(buffering_handler)
 logging.getLogger().setLevel(Settings.get('client/logs/level'))
 
 if environment == 'development':

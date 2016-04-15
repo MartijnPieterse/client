@@ -2,11 +2,13 @@ from functools import partial
 
 from PyQt4.QtCore import QUrl
 from PyQt4.QtGui import QLabel, QStyle
+from PyQt4.QtNetwork import QAbstractSocket
 
 import config
 import connectivity
 from base import Client
 from config import Settings
+import chat
 from client.player import Player
 from client.players import Players
 from client.updater import ClientUpdater
@@ -110,9 +112,7 @@ class ClientWindow(FormClass, BaseClass):
 
     # These signals propagate important client state changes to other modules
     statsInfo = QtCore.pyqtSignal(dict)
-    tourneyTypesInfo = QtCore.pyqtSignal(dict)
     tutorialsInfo = QtCore.pyqtSignal(dict)
-    tourneyInfo = QtCore.pyqtSignal(dict)
     modInfo = QtCore.pyqtSignal(dict)
     gameInfo = QtCore.pyqtSignal(dict)
     modVaultInfo = QtCore.pyqtSignal(dict)
@@ -176,6 +176,7 @@ class ClientWindow(FormClass, BaseClass):
         self.tray.show()
 
         self._state = ClientState.NONE
+        self.auth_state = ClientState.NONE # Using ClientState for reasons
         self.session = None
         self._connection_attempts = 0
 
@@ -190,8 +191,9 @@ class ClientWindow(FormClass, BaseClass):
         fa.instance.started.connect(self.startedFA)
         fa.instance.finished.connect(self.finishedFA)
         fa.instance.error.connect(self.errorFA)
+        self.gameInfo.connect(fa.instance.processGameInfo)
 
-        # Local Replay Server (and relay)
+        # Local Replay Server
         self.replayServer = fa.replayserver.ReplayServer(self)
 
         # GameSession
@@ -200,16 +202,7 @@ class ClientWindow(FormClass, BaseClass):
         # ConnectivityTest
         self.connectivity = None  # type: ConnectivityHelper
 
-        # Local Relay Server
-        self.relayServer = fa.relayserver.RelayServer(self)
-
-        # Local proxy servers
-        self.proxyServer = fa.proxies.proxies(self)
         self.localIP = None
-
-        if not self.proxyServer and not config.no_dialogs:
-            QtGui.QMessageBox.warning(self.client, "Cannot use proxy server",
-                                      "FAF is unable to bind the port <b>12000 to 12011 on TCP</b>.<br>Please check your firewall settings.<br><b>You may experience connections problems until it's fixed.</b>")
 
         # stat server
         self.statsServer = secondaryServer.SecondaryServer("Statistic", 11002, self)
@@ -329,6 +322,14 @@ class ClientWindow(FormClass, BaseClass):
     @QtCore.pyqtSlot(bool)
     def on_actionSavegamelogs_toggled(self, value):
         self.gamelogs = value
+
+    @QtCore.pyqtSlot(bool)
+    def on_actionAutoDownloadMods_toggled(self, value):
+        Settings.set('mods/autodownload', value is True)
+
+    @QtCore.pyqtSlot(bool)
+    def on_actionAutoDownloadMaps_toggled(self, value):
+        Settings.set('maps/autodownload', value is True)
 
     def eventFilter(self, obj, event):
         if (event.type() == QtCore.QEvent.HoverMove):
@@ -494,6 +495,9 @@ class ClientWindow(FormClass, BaseClass):
 
         # Initialize chat
         self.chat = chat.Lobby(self)
+        # Color table used by the following method
+        # CAVEAT: This will break if the theme is loaded after the client package is imported
+        chat.CHAT_COLORS = json.loads(util.readfile("client/colors.json"))
 
         # build main window with the now active client
         self.ladder = stats.Stats(self)
@@ -516,7 +520,7 @@ class ClientWindow(FormClass, BaseClass):
         self.warning = QtGui.QHBoxLayout()
 
         # live streams
-        self.LivestreamWebView.setUrl(QtCore.QUrl("http://www.faforever.com/?page_id=974"))
+        self.LivestreamWebView.setUrl(QtCore.QUrl("http://www.faforever.com/livestream"))
 
         self.warnPlayer = QtGui.QLabel(self)
         self.warnPlayer.setText(
@@ -598,12 +602,6 @@ class ClientWindow(FormClass, BaseClass):
             self.replayServer.close()
             self.replayServer = None
 
-        # Terminate local ReplayServer
-        if self.relayServer:
-            self.progress.setLabelText("Terminating local relay server")
-            self.relayServer.close()
-            self.relayServer = None
-
         # Clean up Chat
         if self.chat:
             self.progress.setLabelText("Disconnecting from IRC")
@@ -649,6 +647,7 @@ class ClientWindow(FormClass, BaseClass):
         self.actionLinkWiki.triggered.connect(partial(self.open_url, Settings.get("WIKI_URL")))
         self.actionLinkForums.triggered.connect(partial(self.open_url, Settings.get("FORUMS_URL")))
         self.actionLinkUnitDB.triggered.connect(partial(self.open_url, Settings.get("UNITDB_URL")))
+        self.actionLinkGitHub.triggered.connect(partial(self.open_url, Settings.get("GITHUB_URL")))
 
         self.actionNsSettings.triggered.connect(lambda: self.notificationSystem.on_showSettings())
         self.actionNsEnabled.triggered.connect(lambda enabled: self.notificationSystem.setNotificationEnabled(enabled))
@@ -669,6 +668,10 @@ class ClientWindow(FormClass, BaseClass):
         # Toggle-Options
         self.actionSetAutoLogin.triggered.connect(self.updateOptions)
         self.actionSetAutoLogin.setChecked(self.remember)
+        self.actionSetAutoDownloadMods.toggled.connect(self.on_actionAutoDownloadMods_toggled)
+        self.actionSetAutoDownloadMods.setChecked(Settings.get('mods/autodownload', type=bool, default=False))
+        self.actionSetAutoDownloadMaps.toggled.connect(self.on_actionAutoDownloadMaps_toggled)
+        self.actionSetAutoDownloadMaps.setChecked(Settings.get('maps/autodownload', type=bool, default=False))
         self.actionSetSoundEffects.triggered.connect(self.updateOptions)
         self.actionSetOpenGames.triggered.connect(self.updateOptions)
         self.actionSetJoinsParts.triggered.connect(self.updateOptions)
@@ -809,9 +812,6 @@ class ClientWindow(FormClass, BaseClass):
         if not self.replayServer.doListen(LOCAL_REPLAY_PORT):
             return False
 
-        if not self.relayServer.doListen():
-            return False
-
         # Begin connecting.
         self.socket.connected.connect(self.on_connected)
         self.socket.setSocketOption(QtNetwork.QTcpSocket.KeepAliveOption, 1)
@@ -831,9 +831,10 @@ class ClientWindow(FormClass, BaseClass):
     @QtCore.pyqtSlot()
     def on_connected(self):
         self.state = ClientState.ACCEPTED
-        self._connection_attempts = 0
         self.localIP = self.socket.localAddress()
-        self.send(dict(command="ask_session"))
+        self.send(dict(command="ask_session",
+                       version=config.VERSION,
+                       user_agent="faf-client"))
         self.connected.emit()
 
     @property
@@ -851,15 +852,8 @@ class ClientWindow(FormClass, BaseClass):
         if not self.can_login:
             self.show_login_wizard()
 
-    # Color table used by the following method
-    # CAVEAT: This will break if the theme is loaded after the client package is imported
-    colors = json.loads(util.readfile("client/colors.json"))
-
     def getColor(self, name):
-        if name in self.colors:
-            return self.colors[name]
-        else:
-            return self.colors["default"]
+        return chat.get_color(name)
 
     @QtCore.pyqtSlot()
     def startedFA(self):
@@ -970,14 +964,6 @@ class ClientWindow(FormClass, BaseClass):
 
         self.socket.write(block)
 
-    def serverTimeout(self):
-        if self.timeout == 0:
-            logger.info("Connection timeout - Checking if server is alive.")
-            self.writeToServer("PING")
-            self.timeout = self.timeout + 1
-        else:
-            self.socket.abort()
-
     @QtCore.pyqtSlot()
     def readFromServer(self):
         ins = QtCore.QDataStream(self.socket)
@@ -992,7 +978,7 @@ class ClientWindow(FormClass, BaseClass):
                 return
 
             action = ins.readQString()
-            logger.info("Server: '%s'" % action)
+            logger.debug("Server: '%s'" % action)
 
             if action == "PING":
                 self.writeToServer("PONG")
@@ -1016,7 +1002,7 @@ class ClientWindow(FormClass, BaseClass):
             self.urls = {}
             self.usersUpdated.emit(oldplayers)
 
-        if self.state != ClientState.DISCONNECTED:
+        if self.state != ClientState.DISCONNECTED and self.state != ClientState.SHUTDOWN:
             self.state = ClientState.DROPPED
             if self._connection_attempts < 2:
                 logger.info("Reconnecting immediately")
@@ -1033,7 +1019,15 @@ class ClientWindow(FormClass, BaseClass):
 
     @QtCore.pyqtSlot(QtNetwork.QAbstractSocket.SocketError)
     def socketError(self, error):
-        logger.error("TCP Socket Error: " + self.socket.errorString())
+        if (error == QAbstractSocket.SocketTimeoutError
+                or error == QAbstractSocket.NetworkError
+                or error == QAbstractSocket.ConnectionRefusedError
+                or error == QAbstractSocket.RemoteHostClosedError):
+            logger.info("Timeout/network error: {}".format(self.socket.errorString()))
+            self.disconnectedFromServer()
+        else:
+            self.state = ClientState.DISCONNECTED
+            logger.error("Fatal TCP Socket Error: " + self.socket.errorString())
 
     @QtCore.pyqtSlot()
     def forwardLocalBroadcast(self, source, message):
@@ -1136,9 +1130,9 @@ class ClientWindow(FormClass, BaseClass):
     @QtCore.pyqtSlot()
     def perform_login(self):
         self.uniqueId = util.uniqueID(self.login, self.session)
+        if not self.uniqueId:
+            return False
         self.send(dict(command="hello",
-                       version=config.VERSION,
-                       user_agent="faf-client",
                        login=self.login,
                        password=self.password,
                        unique_id=self.uniqueId,
@@ -1159,11 +1153,13 @@ class ClientWindow(FormClass, BaseClass):
 
         logger.warn("Server says we need an update")
         self.progress.close()
-        self.state = ClientState.OUTDATED
+        self.state = ClientState.DISCONNECTED
         self._client_updater = ClientUpdater(message['update'])
         self._client_updater.exec_()
 
     def handle_welcome(self, message):
+        self._connection_attempts = 0
+
         self.id = message["id"]
         self.login = message["login"]
         self.me = Player(id=self.id, login=self.login)
@@ -1199,11 +1195,28 @@ class ClientWindow(FormClass, BaseClass):
 
     def handle_registration_response(self, message):
         if message["result"] == "SUCCESS":
-            self.state = ClientState.CREATED
+            self.auth_state = ClientState.CREATED
             return
 
-        self.state = ClientState.REJECTED
+        self.auth_state = ClientState.REJECTED
         self.handle_notice({"style": "notice", "text": message["error"]})
+
+    def search_ranked(self, faction):
+        def request_launch():
+            msg = {
+                'command': 'game_matchmaking',
+                'mod': 'ladder1v1',
+                'state': 'start',
+                'gameport': self.gamePort,
+                'faction': faction
+            }
+            if self.connectivity.state == 'STUN':
+                msg['relay_address'] = self.connectivity.relay_address
+            self.send(msg)
+            self.game_session.ready.disconnect(request_launch)
+        if self.game_session:
+            self.game_session.ready.connect(request_launch)
+            self.game_session.listen()
 
     def host_game(self, title, mod, visibility, mapname, password):
         def request_launch():
@@ -1219,8 +1232,9 @@ class ClientWindow(FormClass, BaseClass):
                 msg['relay_address'] = self.connectivity.relay_address
             self.send(msg)
             self.game_session.ready.disconnect(request_launch)
-        self.game_session.ready.connect(request_launch)
-        self.game_session.listen()
+        if self.game_session:
+            self.game_session.ready.connect(request_launch)
+            self.game_session.listen()
 
     def join_game(self, uid, password=None):
         def request_launch():
@@ -1235,11 +1249,12 @@ class ClientWindow(FormClass, BaseClass):
                 msg['relay_address'] = self.connectivity.relay_address
             self.send(msg)
             self.game_session.ready.disconnect(request_launch)
-        self.game_session.ready.connect(request_launch)
-        self.game_session.listen()
+        if self.game_session:
+            self.game_session.ready.connect(request_launch)
+            self.game_session.listen()
 
     def handle_game_launch(self, message):
-        if not self.game_session:
+        if not self.game_session or not self.connectivity.is_ready:
             logger.error("Not ready for game launch")
 
         logger.info("Handling game_launch via JSON " + str(message))
@@ -1254,25 +1269,27 @@ class ClientWindow(FormClass, BaseClass):
             arguments.append('/' + Factions.to_name(self.games.race))
             # Player 1v1 rating
             arguments.append('/mean')
-            arguments.append(str(self.players[self.id]["ladder_rating_mean"]))
+            arguments.append(str(self.me.ladder_rating_mean))
             arguments.append('/deviation')
-            arguments.append(str(self.players[self.id]["ladder_rating_deviation"]))
+            arguments.append(str(self.me.ladder_rating_deviation))
+            arguments.append('/players 2')  # Always 2 players in 1v1 ladder
+            arguments.append('/team 1')     # Always FFA team
 
             # Launch the auto lobby
-            self.relayServer.init_mode = 1
+            self.game_session.init_mode = 1
 
         else:
             # Player global rating
             arguments.append('/mean')
-            arguments.append(str(self.players[self.id]["rating_mean"]))
+            arguments.append(str(self.me.rating_mean))
             arguments.append('/deviation')
-            arguments.append(str(self.players[self.id]["rating_deviation"]))
+            arguments.append(str(self.me.rating_deviation))
             if self.me.country is not None:
                 arguments.append('/country ')
                 arguments.append(self.me.country)
 
             # Launch the normal lobby
-            self.relayServer.init_mode = 0
+            self.game_session.init_mode = 0
 
         if self.me.clan is not None:
             arguments.append('/clan')
@@ -1287,20 +1304,14 @@ class ClientWindow(FormClass, BaseClass):
 
         # UPnP Mapper - mappings are removed on app exit
         if self.useUPnP:
-            fa.upnp.createPortMapping(self.localIP, self.gamePort, "UDP")
+            fa.upnp.createPortMapping(self.socket.localAddress().toString(), self.gamePort, "UDP")
 
-        info = dict(uid=message['uid'], recorder=self.login, featured_mod=message['mod'], game_time=time.time())
+        info = dict(uid=message['uid'], recorder=self.login, featured_mod=message['mod'], launched_at=time.time())
 
         fa.run(info, self.game_session.relay_port, arguments)
 
     def handle_coop_info(self, message):
         self.coopInfo.emit(message)
-
-    def handle_tournament_types_info(self, message):
-        self.tourneyTypesInfo.emit(message)
-
-    def handle_tournament_info(self, message):
-        self.tourneyInfo.emit(message)
 
     def handle_tutorials_info(self, message):
         self.tutorialsInfo.emit(message)
@@ -1309,7 +1320,11 @@ class ClientWindow(FormClass, BaseClass):
         self.modInfo.emit(message)
 
     def handle_game_info(self, message):
-        self.gameInfo.emit(message)
+        if 'games' in message:
+            for game in message['games']:
+                self.gameInfo.emit(game)
+        else:
+            self.gameInfo.emit(message)
 
     def handle_modvault_list_info(self, message):
         modList = message["modList"]
@@ -1326,11 +1341,22 @@ class ClientWindow(FormClass, BaseClass):
         self.coopLeaderBoard.emit(message)
 
     def handle_matchmaker_info(self, message):
+        if not self.me:
+            return
         if "action" in message:
             self.matchmakerInfo.emit(message)
-
-        elif "potential" in message:
-            if message["potential"]:
+        elif "queues" in message:
+            if self.me.ladder_rating_deviation > 200 or self.games.searching:
+                return
+            key = 'boundary_80s' if self.me.ladder_rating_deviation < 100 else 'boundary_75s'
+            show = False
+            for q in message['queues']:
+                if q['queue_name'] == 'ladder1v1':
+                    mu = self.me.ladder_rating_mean
+                    for min, max in q[key]:
+                        if min < mu < max:
+                            show = True
+            if show:
                 self.warningShow()
             else:
                 self.warningHide()
@@ -1391,6 +1417,7 @@ class ClientWindow(FormClass, BaseClass):
 
     def handle_authentication_failed(self, message):
         QtGui.QMessageBox.warning(self, "Authentication failed", message["text"])
+        self.remember = False
         self.state = ClientState.DISCONNECTED
         self.show_login_wizard()
 

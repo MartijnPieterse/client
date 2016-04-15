@@ -234,7 +234,7 @@ class Channel(FormClass, BaseClass):
 
         # Play a ping sound and flash the title under certain circumstances
         mentioned = text.find(self.lobby.client.login) != -1
-        if self.private or mentioned:
+        if mentioned or (self.private and not (formatter is Formatters.FORMATTER_RAW and  text=="quit.")):
             self.pingWindow()
 
         avatar = None
@@ -269,6 +269,7 @@ class Channel(FormClass, BaseClass):
                     self.chatArea.document().addResource(QtGui.QTextDocument.ImageResource,  QtCore.QUrl(avatar), pix)
                 line = formatter.format(time=self.timestamp(), avatar=avatar, avatarTip=avatarTip, name=displayName, color=color, width=self.maxChatterWidth, text=util.irc_escape(text, self.lobby.a_style))
             else:
+                formatter = Formatters.FORMATTER_MESSAGE
                 line = formatter.format(time=self.timestamp(), name=displayName, color=color, width=self.maxChatterWidth, text=util.irc_escape(text, self.lobby.a_style))
         else:
             line = formatter.format(time=self.timestamp(), name=displayName, color=color, width=self.maxChatterWidth, text=util.irc_escape(text, self.lobby.a_style))
@@ -283,14 +284,20 @@ class Channel(FormClass, BaseClass):
 
     @QtCore.pyqtSlot(str, str)
     def printMsg(self, name, text, scroll_forced=False):
-        if self.lobby.client.players.isFoe(name):
-            return
-        fmt = Formatters.FORMATTER_MESSAGE_AVATAR if self.chatters[name].avatar else Formatters.FORMATTER_MESSAGE
+        if name in self.chatters and self.chatters[name].avatar:
+            fmt = Formatters.FORMATTER_MESSAGE_AVATAR
+        else:
+            fmt = Formatters.FORMATTER_MESSAGE
         self.printLine(name, text, scroll_forced, fmt)
 
     @QtCore.pyqtSlot(str, str)
-    def printAction(self, name, text, scroll_forced=False):
-        fmt = Formatters.FORMATTER_ACTION_AVATAR if self.chatters[name].avatar else Formatters.FORMATTER_ACTION
+    def printAction(self, name, text, scroll_forced=False, server_action=False):
+        if server_action:
+            fmt = Formatters.FORMATTER_RAW
+        elif name in self.chatters and self.chatters[name].avatar:
+            fmt = Formatters.FORMATTER_ACTION_AVATAR
+        else:
+            fmt = Formatters.FORMATTER_ACTION
         self.printLine(name, text, scroll_forced, fmt)
 
     @QtCore.pyqtSlot(str, str)
@@ -354,7 +361,10 @@ class Channel(FormClass, BaseClass):
     @QtCore.pyqtSlot(list)
     def update_users(self, updated_users):
         for id in updated_users:
-            name = self.lobby.client.players[id].login
+            if id in self.lobby.client.players:
+                name = self.lobby.client.players[id].login
+            else:
+                name = id
             if name in self.chatters:
                 self.chatters[name].update()
         
@@ -406,13 +416,13 @@ class Channel(FormClass, BaseClass):
         if join and self.lobby.client.joinsparts:
             self.printAction(name, "joined the channel.", server_action=True)
     
-    def removeChatter(self, name, action = None):
+    def removeChatter(self, name, server_action=None):
         if name in self.chatters:
             self.nickList.removeRow(self.chatters[name].row())        
             del self.chatters[name]
 
-            if action and (self.lobby.client.joinsparts or self.private):
-                self.printAction(name, action, server_action=True)
+            if server_action and (self.lobby.client.joinsparts or self.private):
+                self.printAction(name, server_action, server_action=True)
                 self.stopBlink()
 
 
@@ -449,6 +459,9 @@ class Channel(FormClass, BaseClass):
                     self.lobby.join(text[6:])
                 elif text.startswith(("/topic ")):
                     self.lobby.setTopic(self.name, text[7:])
+                elif text.startswith(("/msg ")):
+                    blobs = text.split(" ")
+                    self.lobby.sendMsg(blobs[1], " ".join(blobs[2:]))
                 elif text.startswith(("/me ")):
                     if self.lobby.sendAction(target, text[4:]):
                         self.printAction(self.lobby.client.login, text[4:], True)

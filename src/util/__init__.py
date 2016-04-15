@@ -536,10 +536,10 @@ def irc_escape(text, a_style=""):
     for fragment in strings:
         match = url_re.match(fragment)
         if match:
-            if "://" in fragment:  #slight hack to get those protocol-less URLs on board. Better: With groups!
-                rpl = '<a href="{0}" style="{1}">{0}</a>'.format(fragment, a_style)
+            if u"://" in fragment:  #slight hack to get those protocol-less URLs on board. Better: With groups!
+                rpl = u'<a href="{0}" style="{1}">{0}</a>'.format(fragment, a_style)
             else:
-                rpl = '<a href="http://{0}" style="{1}">{0}</a>'.format(fragment, a_style)
+                rpl = u'<a href="http://{0}" style="{1}">{0}</a>'.format(fragment, a_style)
 
             fragment = fragment.replace(match.group(0), rpl)
 
@@ -585,8 +585,10 @@ def uniqueID(user, session):
         return baseString
 
     except:
-        logger.error("UniqueID Failure", exc_info=sys.exc_info())
-        return None
+        QtGui.QMessageBox.warning(None, "C++ 2010 Runtime Missing",
+                                  "You are missing the Microsoft Visual C++ 2010 Runtime.<br><br>Get it from here: <a href='https://www.microsoft.com/en-us/download/details.aspx?id=5555'>https://www.microsoft.com/en-us/download/details.aspx?id=5555</a>")
+        logger.warning("UniqueID Failure, user warned", exc_info=sys.exc_info())
+        QtGui.QApplication.quit()
 
 
 import datetime

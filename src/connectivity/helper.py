@@ -12,6 +12,9 @@ from connectivity.turn import TURNState
 from decorators import with_logger
 
 
+from PyQt4 import QtGui, uic
+
+
 @with_logger
 class RelayTest(QObject):
     finished = pyqtSignal()
@@ -108,8 +111,9 @@ class ConnectivityHelper(QObject):
     @property
     def is_ready(self):
         return (self.relay_address is not None
+                and self.relay_address is not [None, None]
                 and self.mapped_address is not None
-                and self._socket.state == QAbstractSocket.BoundState)
+                and self._socket.state() == QAbstractSocket.BoundState)
 
     def start_test(self):
         self.send('InitiateTest', [self._port])
@@ -144,14 +148,22 @@ class ConnectivityHelper(QObject):
     def handle_SendNatPacket(self, msg):
         target, message = msg['args']
         host, port = target.split(':')
+        if self.state is None and self._socket.localPort() == self._port:
+            self._socket.randomize_port()
         self._socket.writeDatagram(b'\x08'+message.encode(), QHostAddress(host), int(port))
 
     def handle_ConnectivityState(self, msg):
+        from client import ClientState
         state, addr = msg['args']
-        host, port = addr.split(':')
-        self.state, self.mapped_address = state, (host, port)
-        self.connectivity_status_established.emit(self.state, self.addr)
-        self._logger.info("Connectivity state is {}, mapped address: {}".format(state, addr))
+        if state == 'BLOCKED':
+            self._logger.warning("Outbound traffic is blocked")
+            QtGui.QMessageBox.warning(None, "Traffic Blocked", "Your outbound traffic appears to be blocked. Try restarting FAF. <br/> If the error persists please contact a moderator and send your logs. <br/> We are already working on a solution to this problem.")
+            self._client.state = ClientState.NONE
+        else:
+            host, port = addr.split(':')
+            self.state, self.mapped_address = state, (host, port)
+            self.connectivity_status_established.emit(self.state, self.addr)
+            self._logger.info("Connectivity state is {}, mapped address: {}".format(state, addr))
 
     def handle_message(self, msg):
         command = msg.get('command')
@@ -203,17 +215,20 @@ class ConnectivityHelper(QObject):
         :param addr:
         :return:
         """
-        if data.startswith(b'\x08'):
-            host, port = addr
-            msg = data[1:].decode()
-            self.send('ProcessNatPacket',
-                      ["{}:{}".format(host, port), msg])
-            if msg.startswith('Bind'):
-                peer_id = int(msg[4:])
-                if (host, port) not in self._socket.bindings:
-                    self._logger.info("Binding {} to {}".format((host, port), peer_id))
-                    self._socket.bind_address((host, port))
-                self._logger.info("Processed bind request")
-            else:
-                self._logger.info("Unknown natpacket")
-            return True
+        try:
+            if data.startswith(b'\x08'):
+                host, port = addr
+                msg = data[1:].decode()
+                self.send('ProcessNatPacket',
+                          ["{}:{}".format(host, port), msg])
+                if msg.startswith('Bind'):
+                    peer_id = int(msg[4:])
+                    if (host, port) not in self._socket.bindings:
+                        self._logger.info("Binding {} to {}".format((host, port), peer_id))
+                        self._socket.bind_address((host, port))
+                    self._logger.info("Processed bind request")
+                else:
+                    self._logger.info("Unknown natpacket")
+                return True
+        except UnicodeDecodeError:
+            return

@@ -5,6 +5,7 @@ from PyQt4 import QtCore, QtGui
 from PyQt4.QtCore import Qt
 
 import util
+from config import Settings
 from games.gameitem import GameItem, GameItemDelegate
 from games.moditem import ModItem, mod_invisible, mods
 from games.hostgamewidget import HostgameWidget
@@ -14,11 +15,16 @@ import modvault
 import notifications as ns
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 FormClass, BaseClass = util.loadUiType("games/games.ui")
 
 class GamesWidget(FormClass, BaseClass):
+
+    hide_private_games = Settings.persisted_property("play/hidePrivateGames", default_value=False, type=bool)
+    sort_games_index = Settings.persisted_property("play/sortGames", default_value=0, type=int) #Default is by player count
+
     def __init__(self, client, *args, **kwargs):
         BaseClass.__init__(self, *args, **kwargs)
 
@@ -67,12 +73,14 @@ class GamesWidget(FormClass, BaseClass):
 
         self.gameList.setItemDelegate(GameItemDelegate(self))
         self.gameList.itemDoubleClicked.connect(self.gameDoubleClicked)
-        self.gameList.sortBy = 0  # Default Sorting is By Players count
+        self.gameList.sortBy = self.sort_games_index  # Default Sorting is By Players count
 
         self.sortGamesComboBox.addItems(['By Players', 'By Game Quality', 'By avg. Player Rating'])
         self.sortGamesComboBox.currentIndexChanged.connect(self.sortGamesComboChanged)
+        self.sortGamesComboBox.setCurrentIndex(self.sort_games_index)
 
         self.hideGamesWithPw.stateChanged.connect(self.togglePrivateGames)
+        self.hideGamesWithPw.setChecked(self.hide_private_games)
 
         self.modList.itemDoubleClicked.connect(self.hostGameClicked)
 
@@ -103,6 +111,8 @@ class GamesWidget(FormClass, BaseClass):
     @QtCore.pyqtSlot(int)
     def togglePrivateGames(self, state):
         # Wow.
+        self.hide_private_games = state
+
         for game in [self.games[game] for game in self.games
                      if self.games[game].state == 'open'
                      and self.games[game].password_protected]:
@@ -131,7 +141,7 @@ class GamesWidget(FormClass, BaseClass):
             self.games[uid].update(message, self.client)
 
         # Hide private games
-        if self.hideGamesWithPw.isChecked() and message['state'] == 'open' and not message['password_protected']:
+        if self.hideGamesWithPw.isChecked() and message['state'] == 'open' and message['password_protected']:
             self.games[uid].setHidden(True)
 
         # Special case: removal of a game that has ended
@@ -139,7 +149,6 @@ class GamesWidget(FormClass, BaseClass):
             if uid in self.games:
                 self.gameList.takeItem(self.gameList.row(self.games[uid]))
                 del self.games[uid]
-            return
 
     def startSearchRanked(self, race):
         for faction, icon in self._ranked_icons.items():
@@ -173,9 +182,7 @@ class GamesWidget(FormClass, BaseClass):
             self.race = race
             self.searchProgress.setVisible(True)
             self.labelAutomatch.setText("Searching...")
-            self.client.send(dict(command="game_matchmaking", mod="ladder1v1", state="start",
-                                  gameport=self.client.gamePort,
-                                  faction=self.race.value))
+            self.client.search_ranked(faction=self.race.value)
 
     @QtCore.pyqtSlot()
     def stopSearchRanked(self, *args):
@@ -211,12 +218,12 @@ class GamesWidget(FormClass, BaseClass):
         if not fa.instance.available():
             return
 
-        self.stopSearchRanked() #Actually a workaround
+        self.stopSearchRanked()  # Actually a workaround
 
         if not fa.check.game(self.client):
             return
 
-        if fa.check.check(item.mod, item.mapname, None, item.mods):
+        if fa.check.check(item.mod, mapname=item.mapname, version=None, sim_mods=item.mods):
             if item.password_protected:
                 passw, ok = QtGui.QInputDialog.getText(self.client, "Passworded game" , "Enter password :", QtGui.QLineEdit.Normal, "")
                 if ok:
@@ -237,20 +244,20 @@ class GamesWidget(FormClass, BaseClass):
 
         hostgamewidget = HostgameWidget(self, item)
         # Abort if the client cancelled the host game dialogue.
-        if hostgamewidget.exec_() != 1 :
+        if hostgamewidget.exec_() != 1:
             return
 
         # Make sure the binaries are all up to date, and abort if the update fails or is cancelled.
         if not fa.check.game(self.client):
             return
 
-        # Ensure all mods are up-to-date, and abort up if the update process fails.
+        # Ensure all mods are up-to-date, and abort if the update process fails.
         if not fa.check.check(item.mod):
             return
 
         modnames = [str(moditem.text()) for moditem in hostgamewidget.modList.selectedItems()]
         mods = [hostgamewidget.mods[modstr] for modstr in modnames]
-        modvault.setActiveMods(mods, True) #should be removed later as it should be managed by the server.
+        modvault.setActiveMods(mods, True)
 
         self.client.host_game(title=self.gamename,
                               mod=item.mod,
@@ -284,11 +291,15 @@ class GamesWidget(FormClass, BaseClass):
         util.settings.setValue("friends_only", friends_only)
 
         if password is not None:
-            self.gamePassword = password
+            self.gamepassword = password
+            self.ispassworded = True
             util.settings.setValue("password", password)
+        else:
+            self.ispassworded = False
 
         util.settings.endGroup()
 
     def sortGamesComboChanged(self, index):
+        self.sort_games_index = index;
         self.gameList.sortBy = index
         self.gameList.sortItems()

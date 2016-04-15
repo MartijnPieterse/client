@@ -2,6 +2,7 @@ import os
 
 from PyQt4 import QtCore, QtGui
 import config
+import re
 
 import logging
 logger = logging.getLogger(__name__)
@@ -16,18 +17,35 @@ class GameArguments:
 class GameProcess(QtCore.QProcess):
     def __init__(self, *args, **kwargs):
         QtCore.QProcess.__init__(self, *args, **kwargs)
+        self.info = None
+
+    @QtCore.pyqtSlot(list)
+    def processGameInfo(self, message):
+        '''
+        Processes game info events, sifting out the ones relevant to the game that's currently playing.
+        If such a game is found, it will merge all its data on the first try, "completing" the game info.
+        '''
+        if self.info and not self.info.setdefault('complete', False):
+            if self.info['uid'] == message['uid']:
+                if message['state'] == "playing":
+                    self.info = dict(self.info.items() + message.items())
+                    self.info['complete'] = True
+                    logger.info("Game Info Complete: " + str(self.info))
 
     def run(self, info, arguments, detach=False, init_file=None):
             """
             Performs the actual running of ForgedAlliance.exe
             in an attached process.
             """
+            self.info = info
+
             executable = os.path.join(config.Settings.get('game/bin/path'),
                                       "ForgedAlliance.exe")
             command = '"' + executable + '" ' + " ".join(arguments)
 
             logger.info("Running FA with info: " + str(info))
             logger.info("Running FA via command: " + command)
+            logger.info("Running FA via executable: " + executable)
 
             # Launch the game as a stand alone process
             if not instance.running():
@@ -36,7 +54,9 @@ class GameProcess(QtCore.QProcess):
                 if not detach:
                     self.start(command)
                 else:
-                    self.startDetached(executable, arguments)
+                    # Remove the wrapping " at the start and end of some arguments as QT will double wrap when launching
+                    arguments = [re.sub('(^"|"$)', '', element) for element in arguments]
+                    self.startDetached(executable, arguments, os.path.dirname(executable))
                 return True
             else:
                 QtGui.QMessageBox.warning(None, "ForgedAlliance.exe", "Another instance of FA is already running.")

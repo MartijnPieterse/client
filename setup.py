@@ -48,7 +48,7 @@ build_exe_options = {
                       ('lib/xdelta3.exe', 'xdelta3.exe'),
                       ('lib/lua51.dll', 'lua51.dll')],
     'icon': 'res/faf.ico',
-    'include_msvcr': False,
+    'include_msvcr': True,
     'optimize': 2,
     'packages': ['cffi', 'pycparser', 'PyQt4', 'PyQt4.uic',
                  'PyQt4.QtGui', 'PyQt4.QtNetwork', 'win32com', 'win32com.client'],
@@ -59,7 +59,7 @@ build_exe_options = {
 shortcut_table = [
     ('DesktopShortcut',           # Shortcut
      'DesktopFolder',             # Directory_
-     'FA Forever BETA',           # Name
+     'FA Forever',                # Name
      'TARGETDIR',                 # Component_
      '[TARGETDIR]FAForever.exe',  # Target
      None,                        # Arguments
@@ -75,7 +75,7 @@ shortcut_table = [
 target_dir = '[ProgramFilesFolder][ProductName]'
 upgrade_code = '{ADE2A55B-834C-4D8D-A071-7A91A3A266B7}'
 
-if True:  # Beta build
+if False:  # Beta build
     product_name += " Beta"
     upgrade_code = '{2A336240-1D51-4726-B36f-78B998DD3740}'
 

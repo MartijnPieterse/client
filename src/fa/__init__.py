@@ -19,9 +19,8 @@ from replay import replay
 
 import check
 import maps
+import mods
 import replayserver
-import relayserver
-import proxies
 import updater
 import upnp
 import factions

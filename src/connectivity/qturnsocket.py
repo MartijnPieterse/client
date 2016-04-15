@@ -69,7 +69,7 @@ class QTurnSocket(QUdpSocket):
         self._session = QTurnSession(self)
         self._state = TURNState.UNBOUND
         self.bindings = {}
-        self.port = port
+        self.initial_port = port
         self._data_cb = data_cb
         self.turn_host, self.turn_port = config.Settings.get('turn/host', type=unicode, default='dev.faforever.com'), \
                                config.Settings.get('turn/port', type=int, default=3478)
@@ -79,6 +79,14 @@ class QTurnSocket(QUdpSocket):
         self.bind(port)
         self.readyRead.connect(self._readyRead)
         self.error.connect(self._error)
+
+    def randomize_port(self):
+        self.abort()
+        self.bind()
+
+    def reset_port(self, to=None):
+        self.abort()
+        self.bind(to or self.initial_port)
 
     def _looked_up(self, info):
         self.turn_address = info.addresses()[0]
@@ -114,7 +122,7 @@ class QTurnSocket(QUdpSocket):
         try:
             self._data_cb(self.bindings[channel], data)
         except KeyError:
-            self._logger.exception("No binding for channel: {}. Known: {}".format(channel, self.bindings))
+            self._logger.debug("No binding for channel: {}. Known: {}".format(channel, self.bindings))
 
     def send(self, data):
         """
